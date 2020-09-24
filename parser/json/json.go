@@ -1,6 +1,7 @@
-package polluter
+package json
 
 import (
+	"github.com/romanyx/polluter/v2/parser"
 	"io"
 	"io/ioutil"
 
@@ -10,7 +11,7 @@ import (
 
 type jsonParser struct{}
 
-func (p jsonParser) parse(r io.Reader) (jwalk.ObjectWalker, error) {
+func (p jsonParser) Parse(r io.Reader) (jwalk.ObjectWalker, error) {
 	data, err := ioutil.ReadAll(r)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to read")
@@ -27,4 +28,10 @@ func (p jsonParser) parse(r io.Reader) (jwalk.ObjectWalker, error) {
 	}
 
 	return obj, nil
+}
+
+// JSONParser option enables JSON
+// parsing engine for seeding.
+func JSONParser() parser.Parser {
+	return jsonParser{}
 }

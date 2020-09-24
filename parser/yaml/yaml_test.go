@@ -1,4 +1,4 @@
-package polluter
+package yaml
 
 import (
 	"io"
@@ -43,7 +43,7 @@ func Test_yamlParser_parse(t *testing.T) {
 			t.Parallel()
 
 			p := yamlParser{}
-			w, err := p.parse(tt.arg)
+			w, err := p.Parse(tt.arg)
 
 			if tt.wantErr && err == nil {
 				assert.NotNil(t, err)
