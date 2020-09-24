@@ -1,4 +1,4 @@
-package polluter
+package json
 
 import (
 	"io"
@@ -42,7 +42,7 @@ func Test_jsonParser_parse(t *testing.T) {
 			t.Parallel()
 
 			s := jsonParser{}
-			_, err := s.parse(tt.arg)
+			_, err := s.Parse(tt.arg)
 
 			if tt.wantErr && err == nil {
 				assert.NotNil(t, err)

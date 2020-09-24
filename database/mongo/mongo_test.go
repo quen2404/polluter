@@ -1,31 +1,61 @@
-package polluter
+package mongo_test
 
 import (
 	"bytes"
-	"context"
-	"fmt"
+	"flag"
+	"github.com/quen2404/polluter/internal/db_test"
+	"log"
+	"os"
+	"testing"
+
+	"github.com/ory/dockertest"
+	"github.com/quen2404/polluter"
+	"github.com/quen2404/polluter/database/mongo"
+	"github.com/quen2404/polluter/parser/json"
 	"github.com/stretchr/testify/assert"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"log"
-	"testing"
-	"time"
 )
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
+	pool, err := dockertest.NewPool("")
+	if err != nil {
+		log.Fatalf("could not connect to docker: %s\n", err)
+	}
+
+	mg, err := db_test.NewMongo(pool)
+	if err != nil {
+		log.Fatalf("prepare mongo with docker: %v\n", err)
+	}
+
+	code := m.Run()
+
+	if err := pool.Purge(mg.Resource); err != nil {
+		log.Fatalf("could not purge mongo docker: %v\n", err)
+	}
+
+	os.Exit(code)
+
+}
 
 func Test_mongoEngineBuild(t *testing.T) {
 	tests := []struct {
 		name   string
 		input  []byte
-		expect commands
+		expect polluter.Commands
 	}{
 		{
 			name:  "example input",
 			input: []byte(`{"users":[{"id":1,"name":"Roman"},{"id":2,"name":"Dmitry"}],"roles":[{"id":2,"role_ids":[1,2]}]}`),
-			expect: commands{
-				command{
-					q: "users",
-					args: []interface{}{
+			expect: polluter.Commands{
+				{
+					Q: "users",
+					Args: []interface{}{
 						bson.D{
 							bson.E{
 								Key:   "id",
@@ -48,9 +78,9 @@ func Test_mongoEngineBuild(t *testing.T) {
 						},
 					},
 				},
-				command{
-					q: "roles",
-					args: []interface{}{
+				{
+					Q: "roles",
+					Args: []interface{}{
 						bson.D{
 							bson.E{
 								Key:   "id",
@@ -72,13 +102,13 @@ func Test_mongoEngineBuild(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			obj, err := jsonParser{}.parse(bytes.NewReader(tt.input))
+			obj, err := json.JSONParser().Parse(bytes.NewReader(tt.input))
 			if err != nil {
 				assert.Nil(t, err)
 			}
 
-			e := mongoEngine{}
-			got, err := e.build(obj)
+			e := mongo.MongoEngine(nil)
+			got, err := e.Build(obj)
 			assert.Nil(t, err)
 			assert.Equal(t, tt.expect, got)
 		})
@@ -92,15 +122,15 @@ func Test_mongoEngine_exec(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		args    []command
+		args    polluter.Commands
 		wantErr bool
 	}{
 		{
 			name: "valid query",
-			args: []command{},
+			args: polluter.Commands{},
 		}, {
 			name: "invalid query",
-			args: []command{},
+			args: polluter.Commands{},
 		},
 	}
 
@@ -108,11 +138,13 @@ func Test_mongoEngine_exec(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			db, teardown := prepareMongoDB(t)
-			defer teardown()
-			e := mongoEngine{db}
+			db, teardown := db_test.PrepareMongoDB(t)
+			defer func() {
+				_ = teardown()
+			}()
+			e := mongo.MongoEngine(db)
 
-			err := e.exec(tt.args)
+			err := e.Exec(tt.args)
 
 			if tt.wantErr && err != nil {
 				assert.NotNil(t, err)
@@ -123,16 +155,5 @@ func Test_mongoEngine_exec(t *testing.T) {
 				assert.Nil(t, err)
 			}
 		})
-	}
-}
-
-func prepareMongoDB(t *testing.T) (db *mongo.Database, teardown func() error) {
-	dbName := fmt.Sprintf("db_%d", time.Now().UnixNano())
-	client, err := mongo.Connect(context.Background(), options.Client().ApplyURI(mongoAddr))
-	if err != nil {
-		log.Fatalf("open mongo connection: %s", err)
-	}
-	return client.Database(dbName), func() error {
-		return client.Disconnect(context.Background())
 	}
 }

@@ -1,8 +1,22 @@
-package polluter
+package polluter_test
 
 import (
 	"errors"
+	"flag"
+	"fmt"
+	"github.com/DATA-DOG/go-txdb"
+	"github.com/ory/dockertest"
+	"github.com/quen2404/polluter"
+	"github.com/quen2404/polluter/database/mongo"
+	"github.com/quen2404/polluter/database/mysql"
+	"github.com/quen2404/polluter/database/postgres"
+	"github.com/quen2404/polluter/database/redis"
+	"github.com/quen2404/polluter/internal/db_test"
+	"github.com/quen2404/polluter/parser"
+	"github.com/quen2404/polluter/parser/yaml"
 	"io"
+	"log"
+	"os"
 	"strings"
 	"testing"
 
@@ -23,29 +37,34 @@ all:
   `
 )
 
-func TestNew(t *testing.T) {
-	p := New()
-	err := p.Pollute(strings.NewReader(input))
-	assert.NotNil(t, err)
+type fakeEngine struct {
+}
+
+func (e fakeEngine) Build(jwalk.ObjectWalker) (polluter.Commands, error) {
+	return polluter.Commands{}, nil
+}
+
+func (e fakeEngine) Exec(polluter.Commands) error {
+	return nil
 }
 
 type parserFunc func(io.Reader) (jwalk.ObjectWalker, error)
 
-func (f parserFunc) parse(r io.Reader) (jwalk.ObjectWalker, error) {
+func (f parserFunc) Parse(r io.Reader) (jwalk.ObjectWalker, error) {
 	return f(r)
 }
 
-type dbEngineFunc func([]command) error
+type dbEngineFunc func(polluter.Commands) error
 
-func (f dbEngineFunc) exec(cmds []command) error {
+func (f dbEngineFunc) Exec(cmds polluter.Commands) error {
 	return f(cmds)
 }
 
-func (f dbEngineFunc) build(obj jwalk.ObjectWalker) (commands, error) {
-	return commands{
-		command{
-			q: "INSERT INTO",
-			args: []interface{}{
+func (f dbEngineFunc) Build(jwalk.ObjectWalker) (polluter.Commands, error) {
+	return polluter.Commands{
+		{
+			Q: "INSERT INTO",
+			Args: []interface{}{
 				1,
 			},
 		},
@@ -54,7 +73,7 @@ func (f dbEngineFunc) build(obj jwalk.ObjectWalker) (commands, error) {
 
 type objectWalker struct{}
 
-func (o objectWalker) Walk(fn func(name string, value interface{}) error) error {
+func (o objectWalker) Walk(func(name string, value interface{}) error) error {
 	return nil
 }
 
@@ -62,11 +81,71 @@ func (o objectWalker) MarshalJSON() ([]byte, error) {
 	return make([]byte, 0), nil
 }
 
+func TestMain(m *testing.M) {
+	flag.Parse()
+
+	if testing.Short() {
+		os.Exit(m.Run())
+	}
+
+	pool, err := dockertest.NewPool("")
+	if err != nil {
+		log.Fatalf("could not connect to docker: %s\n", err)
+	}
+
+	my, err := db_test.NewMySQL(pool)
+	if err != nil {
+		log.Fatalf("prepare mysql with docker: %v\n", err)
+	}
+
+	txdb.Register("mysqltx", "mysql", fmt.Sprintf("test:test@tcp(localhost:%s)/test", my.Resource.GetPort("3306/tcp")))
+
+	p, err := db_test.NewPG(pool)
+	if err != nil {
+		log.Fatalf("prepare pg with docker: %v\n", err)
+	}
+
+	txdb.Register("pgsqltx", "postgres", fmt.Sprintf("password=test user=test dbname=test host=localhost port=%s sslmode=disable", p.Resource.GetPort("5432/tcp")))
+
+	r, err := db_test.NewRedis(pool)
+	if err != nil {
+		log.Fatalf("prepare redis with docker: %v\n", err)
+	}
+
+	mg, err := db_test.NewMongo(pool)
+	if err != nil {
+		log.Fatalf("prepare mongo with docker: %v\n", err)
+	}
+
+	code := m.Run()
+
+	if err := pool.Purge(my.Resource); err != nil {
+		log.Fatalf("could not purge mysql docker: %v\n", err)
+	}
+	if err := pool.Purge(r.Resource); err != nil {
+		log.Fatalf("could not purge redis docker: %v\n", err)
+	}
+	if err := pool.Purge(p.Resource); err != nil {
+		log.Fatalf("could not purge postgres docker: %v\n", err)
+	}
+	if err := pool.Purge(mg.Resource); err != nil {
+		log.Fatalf("could not purge mongo docker: %v\n", err)
+	}
+
+	os.Exit(code)
+}
+
+func TestNew(t *testing.T) {
+	p := polluter.New(fakeEngine{}, yaml.YAMLParser())
+	err := p.Pollute(strings.NewReader(input))
+	assert.Nil(t, err)
+}
+
 func Test_polluterPollute(t *testing.T) {
 	tests := []struct {
 		name     string
-		parser   parser
-		dbEngine dbEngine
+		parser   parser.Parser
+		dbEngine polluter.DbEngine
 		wantErr  bool
 	}{
 		{
@@ -81,7 +160,7 @@ func Test_polluterPollute(t *testing.T) {
 			parser: parserFunc(func(r io.Reader) (jwalk.ObjectWalker, error) {
 				return new(objectWalker), nil
 			}),
-			dbEngine: dbEngineFunc(func(_ []command) error {
+			dbEngine: dbEngineFunc(func(_ polluter.Commands) error {
 				return errors.New("mocked error")
 			}),
 			wantErr: true,
@@ -91,7 +170,7 @@ func Test_polluterPollute(t *testing.T) {
 			parser: parserFunc(func(r io.Reader) (jwalk.ObjectWalker, error) {
 				return new(objectWalker), nil
 			}),
-			dbEngine: dbEngineFunc(func(_ []command) error {
+			dbEngine: dbEngineFunc(func(_ polluter.Commands) error {
 				return nil
 			}),
 		},
@@ -102,9 +181,9 @@ func Test_polluterPollute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			p := &Polluter{
-				parser:   tt.parser,
-				dbEngine: tt.dbEngine,
+			p := &polluter.Polluter{
+				Parser:   tt.parser,
+				DbEngine: tt.dbEngine,
 			}
 
 			err := p.Pollute(nil)
@@ -128,30 +207,38 @@ func TestPollute(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		option func(t *testing.T) (Option, func() error)
+		option func(t *testing.T) (polluter.DbEngine, func() error)
 		input  io.Reader
 	}{
 		{
 			name: "mysql",
-			option: func(t *testing.T) (Option, func() error) {
-				db, teardown := prepareMySQLDB(t)
-				return MySQLEngine(db), teardown
+			option: func(t *testing.T) (polluter.DbEngine, func() error) {
+				db, teardown := db_test.PrepareMySQLDB(t)
+				return mysql.MySQLEngine(db), teardown
 			},
 			input: strings.NewReader(input),
 		},
 		{
 			name: "postgres",
-			option: func(t *testing.T) (Option, func() error) {
-				db, teardown := preparePostgresDB(t)
-				return PostgresEngine(db), teardown
+			option: func(t *testing.T) (polluter.DbEngine, func() error) {
+				db, teardown := db_test.PreparePostgresDB(t)
+				return postgres.PostgresEngine(db), teardown
 			},
 			input: strings.NewReader(pgInput),
 		},
 		{
 			name: "redis",
-			option: func(t *testing.T) (Option, func() error) {
-				db, teardown := prepareRedisDB(t, 0)
-				return RedisEngine(db), teardown
+			option: func(t *testing.T) (polluter.DbEngine, func() error) {
+				db, teardown := db_test.PrepareRedisDB(t, 0)
+				return redis.RedisEngine(db), teardown
+			},
+			input: strings.NewReader(input),
+		},
+		{
+			name: "mongo",
+			option: func(t *testing.T) (polluter.DbEngine, func() error) {
+				db, teardown := db_test.PrepareMongoDB(t)
+				return mongo.MongoEngine(db), teardown
 			},
 			input: strings.NewReader(input),
 		},
@@ -162,14 +249,12 @@ func TestPollute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			option, teardown := tt.option(t)
-			defer teardown()
+			engine, teardown := tt.option(t)
+			defer func() {
+				_ = teardown()
+			}()
 
-			options := []Option{
-				option,
-			}
-
-			p := New(options...)
+			p := polluter.New(engine, yaml.YAMLParser())
 			err := p.Pollute(tt.input)
 			assert.Nil(t, err)
 		})

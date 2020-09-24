@@ -1,8 +1,9 @@
-package polluter
+package yaml
 
 import (
 	"bytes"
 	"fmt"
+	"github.com/quen2404/polluter/parser"
 	"io"
 	"io/ioutil"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 
 type yamlParser struct{}
 
-func (p yamlParser) parse(r io.Reader) (jwalk.ObjectWalker, error) {
+func (p yamlParser) Parse(r io.Reader) (jwalk.ObjectWalker, error) {
 	data, err := ioutil.ReadAll(r)
 	if err != nil {
 		return nil, errors.Wrap(err, "read from input")
@@ -113,4 +114,10 @@ func formatValue(typedYAMLObj interface{}) string {
 	}
 
 	return ""
+}
+
+// YAMLParser option enables YAML
+// parsing engine for seeding.
+func YAMLParser() parser.Parser {
+	return yamlParser{}
 }
